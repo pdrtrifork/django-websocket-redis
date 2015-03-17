@@ -1,22 +1,25 @@
 # -*- coding: utf-8 -*-
 import sys
 from redis import StrictRedis
+from threading import Lock
 import django
 if django.VERSION[:2] >= (1, 7):
     django.setup()
 from django.conf import settings
 from django.core.handlers.wsgi import WSGIRequest, logger, STATUS_CODE_TEXT
-from django.core.exceptions import PermissionDenied
 from django import http
 from django.utils.encoding import force_str
 from django.utils.importlib import import_module
-from django.utils.functional import SimpleLazyObject
 from ws4redis import settings as private_settings
 from ws4redis.redis_store import RedisMessage
 from ws4redis.exceptions import WebSocketError, HandshakeError, UpgradeRequiredError
+from django.core.exceptions import MiddlewareNotUsed, PermissionDenied
+from django.utils.module_loading import import_by_path
 
 
 class WebsocketWSGIServer(object):
+    initLock = Lock()
+
     def __init__(self, redis_connection=None):
         """
         redis_connection can be overriden by a mock object.
@@ -27,6 +30,30 @@ class WebsocketWSGIServer(object):
         self.possible_channels = Subscriber.subscription_channels + Subscriber.publish_channels
         self._redis_connection = redis_connection and redis_connection or StrictRedis(**private_settings.WS4REDIS_CONNECTION)
         self.Subscriber = Subscriber
+        self._request_middleware = None
+        self.load_middleware()
+
+    def load_middleware(self):
+        """
+        Populate middleware list from settings.WS4REDIS_MIDDLEWARE_CLASSES.
+
+        Must be called after the environment is fixed (see __call__ in subclasses).
+        """
+
+        request_middleware = []
+        for middleware_path in settings.WS4REDIS_MIDDLEWARE_CLASSES:
+            mw_class = import_by_path(middleware_path)
+            try:
+                mw_instance = mw_class()
+            except MiddlewareNotUsed:
+                continue
+
+            if hasattr(mw_instance, 'process_request'):
+                request_middleware.append(mw_instance.process_request)
+
+        # We only assign to this when initialization is complete as it is used
+        # as a flag for initialization being complete.
+        self._request_middleware = request_middleware
 
     def assure_protocol_requirements(self, environ):
         if environ.get('REQUEST_METHOD') != 'GET':
@@ -41,14 +68,14 @@ class WebsocketWSGIServer(object):
     def process_request(self, request):
         request.session = None
         request.user = None
-        if 'django.contrib.sessions.middleware.SessionMiddleware' in settings.MIDDLEWARE_CLASSES:
-            engine = import_module(settings.SESSION_ENGINE)
-            session_key = request.COOKIES.get(settings.SESSION_COOKIE_NAME, None)
-            if session_key:
-                request.session = engine.SessionStore(session_key)
-                if 'django.contrib.auth.middleware.AuthenticationMiddleware' in settings.MIDDLEWARE_CLASSES:
-                    from django.contrib.auth import get_user
-                    request.user = SimpleLazyObject(lambda: get_user(request))
+        # Apply request middleware
+        response = None
+        for middleware_method in self._request_middleware:
+            response = middleware_method(request)
+            if response:
+                break
+        if response:
+            raise Exception("Middleware returned unexpected result.")
 
     def process_subscriptions(self, request):
         agreed_channels = []
@@ -63,6 +90,18 @@ class WebsocketWSGIServer(object):
 
     def __call__(self, environ, start_response):
         """ Hijack the main loop from the original thread and listen on events on Redis and Websockets"""
+        # Set up middleware if needed. We couldn't do this earlier, because
+        # settings weren't available.
+        if self._request_middleware is None:
+            with self.initLock:
+                try:
+                    # Check that middleware is still uninitialised.
+                    if self._request_middleware is None:
+                        self.load_middleware()
+                except:
+                    # Unload whatever middleware we got
+                    self._request_middleware = None
+                    raise
         websocket = None
         subscriber = self.Subscriber(self._redis_connection)
         try:
