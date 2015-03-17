@@ -5,7 +5,6 @@ from threading import Lock
 import django
 if django.VERSION[:2] >= (1, 7):
     django.setup()
-from django.conf import settings
 from django.core.handlers.wsgi import WSGIRequest, logger, STATUS_CODE_TEXT
 from django import http
 from django.utils.encoding import force_str
@@ -41,7 +40,7 @@ class WebsocketWSGIServer(object):
         """
 
         request_middleware = []
-        for middleware_path in settings.WS4REDIS_MIDDLEWARE_CLASSES:
+        for middleware_path in private_settings.WS4REDIS_MIDDLEWARE_CLASSES:
             mw_class = import_by_path(middleware_path)
             try:
                 mw_instance = mw_class()

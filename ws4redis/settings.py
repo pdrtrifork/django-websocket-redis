@@ -48,7 +48,15 @@ database!
 WS4REDIS_ALLOWED_CHANNELS = getattr(settings, 'WS4REDIS_ALLOWED_CHANNELS', None)
 
 """
-If set, this callback function is called instead of the default process_request function in WebsocketWSGIServer.
+If set, this callback function is called instead of the default process_request function in
+WebsocketWSGIServer.
 This function can be used to enforce custom authentication flow. i.e. JWT
 """
 WS4REDIS_PROCESS_REQUEST = getattr(settings, 'WS4REDIS_PROCESS_REQUEST', None)
+
+"""
+A tuple of middleware classes to use.
+In WS4REDIS_MIDDLEWARE_CLASSES, each middleware component is represented by a string: the full
+Python path to the middleware’s class name.
+"""
+WS4REDIS_MIDDLEWARE_CLASSES = getattr(settings, 'WS4REDIS_MIDDLEWARE_CLASSES', ())
